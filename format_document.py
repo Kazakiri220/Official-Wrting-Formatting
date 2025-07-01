@@ -1,3 +1,5 @@
+
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, Toplevel, Listbox, END
 import json
@@ -5,16 +7,16 @@ import os
 import re
 import docx
 from docx.shared import Mm, Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 # --- 全局配置 ---
-CONFIG_FILE = 'format_tool_config_v4.json'
+CONFIG_FILE = 'gov_doc_format_config.json'
 
-# --- 格式规范 (根据 公文要求.txt 最终版) ---
-class GovDocFormatterV4:
+# --- 格式规范 (最终版) ---
+class GovDocFormatter:
     # 字体
     FONT_XBS = '方正小标宋简体'
     FONT_FS = '仿宋_GB2312'
@@ -46,16 +48,15 @@ class GovDocFormatterV4:
         if first_line_indent is not None: p.paragraph_format.first_line_indent = first_line_indent
         if right_indent is not None: p.paragraph_format.right_indent = right_indent
 
-    def add_red_separator(self, doc):
+    def add_separator(self, doc, thickness='single', size=4, color='FF0000', space_before=Mm(4)):
         p = doc.add_paragraph()
-        self.set_paragraph_format(p, space_before=Mm(4))
-        # Correct way to add a paragraph border
+        self.set_paragraph_format(p, space_before=space_before, space_after=Pt(0))
         pPr = p._element.get_or_add_pPr()
         p_bdr = OxmlElement('w:pBdr')
         bottom_bdr = OxmlElement('w:bottom')
-        bottom_bdr.set(qn('w:val'), 'single')
-        bottom_bdr.set(qn('w:sz'), '4') # 1/8 pt, so 4 = 0.5pt
-        bottom_bdr.set(qn('w:color'), 'FF0000') # Red
+        bottom_bdr.set(qn('w:val'), thickness)
+        bottom_bdr.set(qn('w:sz'), str(size))
+        bottom_bdr.set(qn('w:color'), color)
         p_bdr.append(bottom_bdr)
         pPr.append(p_bdr)
 
@@ -69,87 +70,100 @@ class GovDocFormatterV4:
         p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
         p.alignment = alignment
         p.clear()
-        run = p.add_run('— ')
-        self.set_font_style(run, self.FONT_SONG, self.SIZE_4)
-        
-        fld_char_begin = OxmlElement('w:fldChar')
-        fld_char_begin.set(qn('w:fldCharType'), 'begin')
-        instr_text = OxmlElement('w:instrText')
-        instr_text.set(qn('xml:space'), 'preserve')
-        instr_text.text = 'PAGE'
-        fld_char_end = OxmlElement('w:fldChar')
-        fld_char_end.set(qn('w:fldCharType'), 'end')
-
-        run._r.append(fld_char_begin)
-        run._r.append(instr_text)
-        run._r.append(fld_char_end)
-
-        run = p.add_run(' —')
-        self.set_font_style(run, self.FONT_SONG, self.SIZE_4)
+        run = p.add_run('— '); self.set_font_style(run, self.FONT_SONG, self.SIZE_4)
+        fld_char_begin = OxmlElement('w:fldChar'); fld_char_begin.set(qn('w:fldCharType'), 'begin')
+        instr_text = OxmlElement('w:instrText'); instr_text.set(qn('xml:space'), 'preserve'); instr_text.text = 'PAGE'
+        fld_char_end = OxmlElement('w:fldChar'); fld_char_end.set(qn('w:fldCharType'), 'end')
+        run._r.append(fld_char_begin); run._r.append(instr_text); run._r.append(fld_char_end)
+        run = p.add_run(' —'); self.set_font_style(run, self.FONT_SONG, self.SIZE_4)
 
     def process(self, data, input_path):
         doc = docx.Document()
         section = doc.sections[0]
-        section.top_margin = Mm(37)
-        section.bottom_margin = Mm(35)
-        section.left_margin = Mm(28)
-        section.right_margin = Mm(26)
+        section.top_margin = Mm(37); section.bottom_margin = Mm(35); section.left_margin = Mm(28); section.right_margin = Mm(26)
 
         if data.get('add_page_number'): self.add_page_number(doc)
 
         # --- 版头 ---
+        if data.get('copy_number'):
+            p = doc.add_paragraph(); self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.LEFT)
+            run = p.add_run(data['copy_number']); self.set_font_style(run, self.FONT_FS, self.SIZE_3)
+        if data.get('security_level'):
+            p = doc.add_paragraph(); self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.LEFT)
+            run = p.add_run(data['security_level']); self.set_font_style(run, self.FONT_HT, self.SIZE_3)
+        if data.get('urgency'):
+            p = doc.add_paragraph(); self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.LEFT)
+            run = p.add_run(data['urgency']); self.set_font_style(run, self.FONT_HT, self.SIZE_3)
+
         if data.get('issuing_authority_logo'):
             p = doc.add_paragraph()
             self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.CENTER, space_before=Mm(35) - self.SIZE_2)
-            run = p.add_run(data['issuing_authority_logo'])
-            self.set_font_style(run, self.FONT_XBS, self.SIZE_2, color_rgb=(255, 0, 0))
+            run = p.add_run(data['issuing_authority_logo']); self.set_font_style(run, self.FONT_XBS, self.SIZE_2, color_rgb=(255, 0, 0))
 
-        if data.get('doc_number'):
+        # 发文字号和签发人 (Corrected Layout using Tab Stop)
+        if data.get('doc_number') or data.get('signatory'):
             p = doc.add_paragraph()
-            self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.CENTER, space_before=self.SIZE_3 * 2)
-            run = p.add_run(data['doc_number'])
-            self.set_font_style(run, self.FONT_FS, self.SIZE_3)
+            self.set_paragraph_format(p, space_before=self.SIZE_3 * 2)
+            tab_stops = p.paragraph_format.tab_stops
+            tab_stops.add_tab_stop(Mm(156), WD_TAB_ALIGNMENT.RIGHT)
+            
+            if data.get('doc_number'):
+                run_num = p.add_run(data['doc_number'])
+                self.set_font_style(run_num, self.FONT_FS, self.SIZE_3)
 
-        if data.get('add_red_separator'): self.add_red_separator(doc)
+            if data.get('signatory'):
+                p.add_run('\t')
+                run_sig_label = p.add_run('签发人：')
+                self.set_font_style(run_sig_label, self.FONT_FS, self.SIZE_3)
+                run_sig_name = p.add_run(data['signatory'])
+                self.set_font_style(run_sig_name, self.FONT_KT, self.SIZE_3)
+
+        if data.get('add_red_separator'): self.add_separator(doc)
 
         # --- 主体 ---
         if data.get('main_title'):
-            p = doc.add_paragraph()
-            self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.CENTER, space_before=self.SIZE_3 * 2)
-            run = p.add_run(data['main_title'])
-            self.set_font_style(run, self.FONT_XBS, self.SIZE_2)
+            p = doc.add_paragraph(); self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.CENTER, space_before=self.SIZE_3 * 2)
+            run = p.add_run(data['main_title']); self.set_font_style(run, self.FONT_XBS, self.SIZE_2)
 
         if data.get('main_recipient'):
-            p = doc.add_paragraph()
-            self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.LEFT, space_before=self.SIZE_3)
-            run = p.add_run(data['main_recipient'] + '：')
-            self.set_font_style(run, self.FONT_FS, self.SIZE_3)
+            p = doc.add_paragraph(); self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.LEFT, space_before=self.SIZE_3)
+            run = p.add_run(data['main_recipient'] + '：'); self.set_font_style(run, self.FONT_FS, self.SIZE_3)
 
         doc.add_paragraph() # 空一行
         self.process_body(doc, input_path, data.get('main_title'))
 
         # --- 文末要素 ---
         if data.get('attachment_note'):
-            p = doc.add_paragraph()
-            self.set_paragraph_format(p, line_spacing=Pt(28), first_line_indent=Pt(self.SIZE_3.pt * 2), space_before=self.SIZE_3)
-            run = p.add_run('附件：' + data['attachment_note'])
-            self.set_font_style(run, self.FONT_FS, self.SIZE_3)
+            p = doc.add_paragraph(); self.set_paragraph_format(p, line_spacing=Pt(28), first_line_indent=Pt(self.SIZE_3.pt * 2), space_before=self.SIZE_3)
+            run = p.add_run('附件：' + data['attachment_note']); self.set_font_style(run, self.FONT_FS, self.SIZE_3)
 
-        # 署名和日期 (FIXED LOGIC)
         if data.get('issuing_authority_signature') and data.get('doc_date'):
             indent_chars = 4 if data.get('is_stamped') else 2
-            p = doc.add_paragraph()
-            self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.RIGHT, 
-                                      right_indent=Pt(self.SIZE_3.pt * indent_chars), 
-                                      space_before=self.SIZE_3 * 2)
-            
-            run_sig = p.add_run(data['issuing_authority_signature'])
-            self.set_font_style(run_sig, self.FONT_FS, self.SIZE_3)
-            p.add_run('\n') # 换行
-            run_date = p.add_run(data['doc_date'])
-            self.set_font_style(run_date, self.FONT_FS, self.SIZE_3)
+            p = doc.add_paragraph(); self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.RIGHT, right_indent=Pt(self.SIZE_3.pt * indent_chars), space_before=self.SIZE_3 * 2)
+            run_sig = p.add_run(data['issuing_authority_signature']); self.set_font_style(run_sig, self.FONT_FS, self.SIZE_3)
+            p.add_run('\n')
+            run_date = p.add_run(data['doc_date']); self.set_font_style(run_date, self.FONT_FS, self.SIZE_3)
 
-        output_path = os.path.splitext(input_path)[0] + "_formatted_v4.docx"
+        if data.get('addendum'):
+            p = doc.add_paragraph()
+            self.set_paragraph_format(p, line_spacing=Pt(28), first_line_indent=Pt(self.SIZE_3.pt * 2))
+            # CORRECTED SYNTAX
+            run_text = "（" + data.get('addendum', '') + "）"
+            run = p.add_run(run_text)
+            self.set_font_style(run, self.FONT_FS, self.SIZE_3)
+
+        # --- 版记 ---
+        if data.get('cc_list') or data.get('printing_info'):
+            self.add_separator(doc, thickness='double', size=6, color='000000', space_before=self.SIZE_3)
+            if data.get('cc_list'):
+                p = doc.add_paragraph(); self.set_paragraph_format(p, line_spacing=Pt(28))
+                run = p.add_run(f"抄送：{data['cc_list']}"); self.set_font_style(run, self.FONT_FS, self.SIZE_4)
+            if data.get('printing_info'):
+                p = doc.add_paragraph(); self.set_paragraph_format(p, alignment=WD_ALIGN_PARAGRAPH.CENTER, line_spacing=Pt(28))
+                run = p.add_run(data['printing_info']); self.set_font_style(run, self.FONT_FS, self.SIZE_4)
+            self.add_separator(doc, thickness='single', size=6, color='000000', space_before=Pt(0))
+
+        output_path = os.path.splitext(input_path)[0] + "_formatted.docx"
         doc.save(output_path)
         return output_path
 
@@ -240,13 +254,13 @@ class ManagementDialog(Toplevel):
         self.combobox['values'] = items
         if items: self.combobox.set(items[0])
 
-class AppV4(tk.Tk):
+class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("公文智能排版工具 V4.0 - 稳定版")
-        self.geometry("650x600")
+        self.title("公文智能排版工具")
+        self.geometry("700x750")
         self.config_manager = ConfigManager()
-        self.formatter = GovDocFormatterV4()
+        self.formatter = GovDocFormatter()
         self.create_widgets()
 
     def create_widgets(self):
@@ -255,38 +269,52 @@ class AppV4(tk.Tk):
         self.file_path_var = tk.StringVar(value="尚未选择文件...")
         ttk.Button(file_frame, text="选择 .txt 或 .docx 文件", command=self.select_file).pack(side=tk.LEFT)
         ttk.Label(file_frame, textvariable=self.file_path_var).pack(side=tk.LEFT, padx=10)
+
         notebook = ttk.Notebook(main_frame); notebook.pack(fill=tk.BOTH, expand=True, pady=10)
-        tab1 = ttk.Frame(notebook, padding="10"); tab2 = ttk.Frame(notebook, padding="10")
-        notebook.add(tab1, text='版头与主体'); notebook.add(tab2, text='文末与选项')
+        tab1 = ttk.Frame(notebook, padding="10"); tab2 = ttk.Frame(notebook, padding="10"); tab3 = ttk.Frame(notebook, padding="10")
+        notebook.add(tab1, text='版头'); notebook.add(tab2, text='主体与文末'); notebook.add(tab3, text='版记与选项')
         self.controls = {}
+
+        # Tab 1: 版头
+        self.add_combobox(tab1, "copy_number", "份号")
+        self.add_combobox(tab1, "security_level", "密级和保密期限")
+        self.add_combobox(tab1, "urgency", "紧急程度")
         self.add_combobox(tab1, "issuing_authority_logo", "发文机关标志")
         self.add_combobox(tab1, "doc_number", "发文字号")
-        self.add_entry(tab1, "main_title", "公文标题")
-        self.add_combobox(tab1, "main_recipient", "主送机关") # ENHANCED
+        self.add_combobox(tab1, "signatory", "签发人")
+
+        # Tab 2: 主体与文末
+        self.add_entry(tab2, "main_title", "公文标题")
+        self.add_combobox(tab2, "main_recipient", "主送机关")
         self.add_combobox(tab2, "issuing_authority_signature", "发文机关署名")
         self.add_entry(tab2, "doc_date", "成文日期")
         self.add_entry(tab2, "attachment_note", "附件说明")
-        options_frame = ttk.LabelFrame(tab2, text="格式选项", padding="10"); options_frame.pack(fill=tk.X, pady=20)
+        self.add_combobox(tab2, "addendum", "附注")
+
+        # Tab 3: 版记与选项
+        self.add_combobox(tab3, "cc_list", "抄送机关")
+        self.add_combobox(tab3, "printing_info", "印发机关和印发日期")
+        options_frame = ttk.LabelFrame(tab3, text="格式选项", padding="10"); options_frame.pack(fill=tk.X, pady=20)
         self.controls['add_red_separator'] = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame, text="生成红色分隔线", variable=self.controls['add_red_separator']).pack(side=tk.LEFT, padx=10)
         self.controls['is_stamped'] = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame, text="是否加盖印章", variable=self.controls['is_stamped']).pack(side=tk.LEFT, padx=10)
         self.controls['add_page_number'] = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame, text="生成页码", variable=self.controls['add_page_number']).pack(side=tk.LEFT, padx=10)
+
         ttk.Button(main_frame, text="2. 生成格式化Word文档", command=self.generate_document).pack(fill=tk.X, pady=10)
 
     def add_entry(self, parent, key, label):
-        container = ttk.Frame(parent); container.pack(fill=tk.X, pady=(5,0))
+        container = ttk.Frame(parent); container.pack(fill=tk.X, pady=(5,0), anchor='n')
         ttk.Label(container, text=f"{label}:").pack(anchor=tk.W)
-        entry = ttk.Entry(container, width=60); entry.pack(fill=tk.X)
+        entry = ttk.Entry(container, width=80); entry.pack(fill=tk.X)
         self.controls[key] = entry
 
     def add_combobox(self, parent, key, label):
-        container = ttk.Frame(parent); container.pack(fill=tk.X, pady=(5,0))
+        container = ttk.Frame(parent); container.pack(fill=tk.X, pady=(5,0), anchor='n')
         ttk.Label(container, text=f"{label}:").pack(anchor=tk.W)
-        combo_container = ttk.Frame(container)
-        combo_container.pack(fill=tk.X)
-        combo = ttk.Combobox(combo_container, width=58); combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        combo_container = ttk.Frame(container); combo_container.pack(fill=tk.X)
+        combo = ttk.Combobox(combo_container, width=78); combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         items = self.config_manager.get(key)
         combo['values'] = items
         if items: combo.set(items[0])
@@ -323,5 +351,5 @@ class AppV4(tk.Tk):
             messagebox.showerror("生成失败", f"发生严重错误：\n{e}\n\n请检查文件内容或联系技术支持。")
 
 if __name__ == "__main__":
-    app = AppV4()
+    app = App()
     app.mainloop()
